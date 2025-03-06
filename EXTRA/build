@@ -1,0 +1,2 @@
+gcc -o mqsend  -Wall -Werror -lrt mqsend.c
+ 

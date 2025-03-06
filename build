@@ -1,0 +1,8 @@
+# Compile
+#gcc -I/usr/include/lilv-0 -I/usr/include/sratom-0 -I/usr/include/serd-0 -I/usr/include/sord-0  -Wall -Winvalid-pch -std=c99 -O3 -g -fPIC -pthread -Wno-strict-overflow -c uibridge.c
+gcc -I/usr/include/lilv-0 -I/usr/include/serd-0 -I/usr/include/sord-0  -Wall -Winvalid-pch -std=c99 -O3 -g -fPIC -pthread -Wno-strict-overflow -c uibridge.c
+# Link
+#gcc -o uibridge.lv2/uibridge.so uibridge.o -Wl,--as-needed -Wl,--no-undefined -Wl,-O1 -shared -fPIC -lsord-0 -lserd-0 -lsratom-0 -llilv-0
+gcc -o uibridge.lv2/uibridge.so uibridge.o -Wl,--as-needed -Wl,--no-undefined -Wl,-O1 -shared -fPIC -lsord-0 -lserd-0 -llilv-0
+# Install
+sudo cp -r uibridge.lv2 /usr/lib/lv2 
