@@ -25,10 +25,10 @@
 
 #define QUEUE_PERMISSIONS 0660
 #define MAX_MESSAGES 10
-#define MAX_MSG_SIZE 1000
+#define MAX_MSG_SIZE 2000
 #define MSG_BUFFER_SIZE MAX_MSG_SIZE + 10
 
-#define UI_URI "http://helander.network/plugins/setbfreeui"
+#define UI_URI "http://helander.network/plugins/uibridge"
 
 typedef struct
 {
@@ -51,6 +51,9 @@ typedef struct
     LV2_URID atom_Object;
     LV2_URID atom_String;
     LV2_URID atom_Int;
+    LV2_URID atom_Float;
+    LV2_URID atom_URID;
+    LV2_URID atom_Path;
     LV2_URID midi_MidiEvent;
 
     uint8_t forge_buf[1024];
@@ -93,7 +96,7 @@ static LV2UI_Handle instantiate(const LV2UI_Descriptor* descriptor, const char* 
     attr.mq_maxmsg = MAX_MESSAGES;
     attr.mq_msgsize = MAX_MSG_SIZE;
     attr.mq_curmsgs = 0;
-    char* inputQueue = "/setbfreeuiinput";
+    char* inputQueue = "/uibridgeinput";
 
     if ((ui->mq_input = mq_open(inputQueue, O_RDONLY | O_CREAT | O_NONBLOCK, QUEUE_PERMISSIONS, &attr)) == -1) {
         printf("\nFailed to open input queue <%s>\n", inputQueue);
@@ -128,23 +131,12 @@ static LV2UI_Handle instantiate(const LV2UI_Descriptor* descriptor, const char* 
     ui->atom_Object = ui->map->map(ui->map->handle, LV2_ATOM__Object);
     ui->atom_String = ui->map->map(ui->map->handle, LV2_ATOM__String);
     ui->atom_Int = ui->map->map(ui->map->handle, LV2_ATOM__Int);
+    ui->atom_Float = ui->map->map(ui->map->handle, LV2_ATOM__Float);
+    ui->atom_URID = ui->map->map(ui->map->handle, LV2_ATOM__URID);
+    ui->atom_Path = ui->map->map(ui->map->handle, LV2_ATOM__Path);
     ui->midi_MidiEvent = ui->map->map(ui->map->handle, LV2_MIDI__MidiEvent);
+
     lv2_atom_forge_init(&ui->forge, ui->map);
-
-/*Replace this with an announcement  message to the output MQ
-    // Request state  from plugin
-    lv2_atom_forge_set_buffer(&ui->forge, ui->forge_buf, sizeof(ui->forge_buf));
-    LV2_Atom_Forge_Frame frame;
-    LV2_Atom* msg = (LV2_Atom*)lv2_atom_forge_object(&ui->forge, &frame, 0, ui->b_synth_uiinit);
-
-    assert(msg);
-
-    lv2_atom_forge_pop(&ui->forge, &frame);
-
-    // dumpmem(msg, 32, 4);
-
-    ui->write(ui->controller, 0, lv2_atom_total_size(msg), ui->atom_eventTransfer, msg);
-*/
 
     return ui;
 }
@@ -166,37 +158,49 @@ an_object(ThisUI* ui, char* source, LV2_Atom_Object* obj)
         if (p->value.type == ui->atom_Int) {
             LV2_Atom_Int* intAtom = (LV2_Atom_Int*)&p->value;
             sprintf(message + strlen(message), "key|%s|type|integer|value|%d|", ui->unmap->unmap(ui->unmap->handle, p->key), intAtom->body);
+        } else if (p->value.type == ui->atom_Float) {
+            LV2_Atom_Float* floatAtom = (LV2_Atom_Float*)&p->value;
+            sprintf(message + strlen(message), "key|%s|type|float|value|%f|", ui->unmap->unmap(ui->unmap->handle, p->key), floatAtom->body);
         } else if (p->value.type == ui->atom_String) {
             LV2_Atom_String* stringAtom = (LV2_Atom_String*)&p->value;
             sprintf(message + strlen(message), "key|%s|type|string|value|%s|", ui->unmap->unmap(ui->unmap->handle, p->key), ((char*)stringAtom) + sizeof(LV2_Atom_String));
+        } else if (p->value.type == ui->atom_Path) {
+            LV2_Atom_String* pathAtom = (LV2_Atom_String*)&p->value;
+            sprintf(message + strlen(message), "key|%s|type|path|value|%s|", ui->unmap->unmap(ui->unmap->handle, p->key), ((char*)pathAtom) + sizeof(LV2_Atom_String));
+        } else if (p->value.type == ui->atom_URID) {
+            LV2_Atom_URID* uridAtom = (LV2_Atom_URID*)&p->value;
+            sprintf(message + strlen(message), "key|%s|type|uri|value|%s|", ui->unmap->unmap(ui->unmap->handle, p->key), ui->unmap->unmap(ui->unmap->handle,uridAtom->body));
         } else if (p->value.type == ui->atom_Object) {
             an_object(ui, source, (LV2_Atom_Object*)p);
         } else {
-            printf("\n Unsupported atom type %s ", ui->unmap->unmap(ui->unmap->handle, p->value.type));
+            printf("\n Unsupported atom type %s  size %d ", ui->unmap->unmap(ui->unmap->handle, p->value.type),p->value.size);
             fflush(stdout);
         }
     }
-    //printf("\nMESSAGE %s", message); replace with mq_send
+    printf("\nMESSAGE %s", message);fflush(stdout); //replace with mq_send
 }
 
 static void port_event(LV2UI_Handle handle, uint32_t port_index, uint32_t buffer_size, uint32_t format,
     const void* buffer)
 {
     ThisUI* ui = (ThisUI*)handle;
+    if(!format) return;
 
     if (format != ui->atom_eventTransfer) {
-        fprintf(stderr, "ThisUI: Unknown message format.\n");
+        fprintf(stdout, "ThisUI: Unexpected (not event transfer) message format %d  %s.\n",format,ui->unmap->unmap(ui->unmap->handle,format));
+        fflush(stdout);
         return;
     }
 
     LV2_Atom* atom = (LV2_Atom*)buffer;
+        fprintf(stdout, "ThisUI: Atom size %d  type  %d %s  \n",atom->size,atom->type,ui->unmap->unmap(ui->unmap->handle,atom->type));
 
     if (atom->type == ui->midi_MidiEvent) {
         return;
     }
 
     if (atom->type != ui->atom_Blank && atom->type != ui->atom_Object) {
-        fprintf(stderr, "ThisUI: not an atom:Blank|Object msg. %d %s  \n",atom->type,ui->unmap->unmap(ui->unmap->handle,atom->type));
+        fprintf(stdout, "ThisUI: not an atom:Blank|Object msg. %d %s  \n",atom->type,ui->unmap->unmap(ui->unmap->handle,atom->type));
         return;
     }
 
@@ -217,10 +221,10 @@ static int ui_idle(LV2UI_Handle handle)
     if (bytes == -1)
         return 0; // No messages availble
     message[bytes] = 0;
-    //printf("\nMessage with %d bytes received  %s", bytes, message);fflush(stdout);
+//    printf("\nMessage with %d bytes received  %s", bytes, message);fflush(stdout);
 
-    uint8_t obj_buf[1000];
-    lv2_atom_forge_set_buffer(&ui->forge, obj_buf, 1000);
+    uint8_t obj_buf[2000];
+    lv2_atom_forge_set_buffer(&ui->forge, obj_buf, 2000);
     LV2_Atom* msg = NULL;
 
     LV2_Atom_Forge_Frame frame;
@@ -228,11 +232,21 @@ static int ui_idle(LV2UI_Handle handle)
 
     char *token = strtok(message, "|");
 
+    if (strcmp(token,"port")) return 0;
+    token = strtok(NULL,"|");
+    uint32_t portIndex = atoi(token);
+    token = strtok(NULL,"|");
+    if (!strcmp(token,"control")) {
+       token = strtok(NULL,"|");
+       float value = atof(token);
+       ui->write(ui->controller, portIndex, sizeof(float), /*ui->ui_floatProtocol*/ 0, &value);
+       return 0;
+    }
     if (!strcmp(token,"object")) {
        token = strtok(NULL,"|");
        if (token) {
           LV2_URID object = ui->map->map(ui->map->handle, token);
-          msg = (LV2_Atom*)lv2_atom_forge_object (&ui->forge, &frame, 1, object);
+          msg = (LV2_Atom*)lv2_atom_forge_object (&ui->forge, &frame, 0, object);
           token = strtok(NULL,"|");
           while (token != NULL) {
             if (!strcmp(token,"key")) {
@@ -257,6 +271,10 @@ static int ui_idle(LV2UI_Handle handle)
                                     lv2_atom_forge_int (&ui->forge, atoi(value));
                                  } else if (!strcmp(type,"string")){
                                     lv2_atom_forge_string (&ui->forge, value, strlen (value));
+                                 } else if (!strcmp(type,"path")){
+                                    lv2_atom_forge_path (&ui->forge, value, strlen (value));
+                                 } else if (!strcmp(type,"uri")){
+                                    lv2_atom_forge_urid (&ui->forge, ui->map->map(ui->map->handle, value));
                                  }
                               }
                            }
@@ -274,10 +292,11 @@ static int ui_idle(LV2UI_Handle handle)
     lv2_atom_forge_pop (&ui->forge, &frame);
 
     if (msg)
-        ui->write(ui->controller, 0, lv2_atom_total_size(msg), ui->atom_eventTransfer, msg);
+        ui->write(ui->controller, portIndex, lv2_atom_total_size(msg), ui->atom_eventTransfer, msg);
 
     return 0;
 }
+
 static int noop()
 {
     return 0;

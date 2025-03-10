@@ -1,2 +1,2 @@
 gcc -o mqsend  -Wall -Werror -lrt mqsend.c
- 
+sudo cp mqsend /usr/bin 

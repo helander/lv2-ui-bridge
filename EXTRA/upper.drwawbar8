@@ -1,0 +1,2 @@
+|port|0|object|http://gareus.org/oss/lv2/b_synth#controlmsg|key|http://gareus.org/oss/lv2/b_synth#controlkey|type|string|value|upper.drawbar8|key|http://gareus.org/oss/lv2/b_synth#controlval|type|integer|value|35|
+

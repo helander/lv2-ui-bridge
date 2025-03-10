@@ -1,0 +1,1 @@
+|port|0|object|http://lv2plug.in/ns/ext/patch#Set|key|http://lv2plug.in/ns/ext/patch#property|type|uri|value|http://spectmorph.org/plugins/liquidsfz#sfzfile|key|http://lv2plug.in/ns/ext/patch#value|type|path|value|/home/lehswe/compose/soundcan/SFZ/SalamanderGrandPianoV3_48khz24bit/SalamanderGrandPianoV3.sfz|

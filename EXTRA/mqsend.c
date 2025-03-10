@@ -25,9 +25,12 @@ int main(int argc, char **argv) {
   struct mq_attr attr;
   CHECK_EQ0(mq_getattr(q, &attr));
   
-  char *buf = malloc(attr.mq_msgsize);
+printf("\nSize %ld",attr.mq_msgsize);fflush(stdout);
+//  char *buf = malloc(attr.mq_msgsize);
+  char *buf = malloc(1000);
   size_t n;
-  CHECK_GTE0(n = fread(buf, 1, attr.mq_msgsize, stdin));
+//  CHECK_GTE0(n = fread(buf, 1, attr.mq_msgsize, stdin));
+  CHECK_GTE0(n = fread(buf, 1, 1000, stdin));
   CHECK_GTE0(mq_send(q, buf, n, priority));
 }
 
