@@ -11,6 +11,7 @@
 #include <lv2/time/time.h>
 #include <lv2/ui/ui.h>
 #include <lv2/urid/urid.h>
+#include <lv2/options/options.h>
 #include <stdio.h>
 
 #include <assert.h>
@@ -21,6 +22,11 @@
 
 #include <mqueue.h>
 
+#include <uuid/uuid.h>
+
+
+
+
 #include <lilv/lilv.h>
 
 #define QUEUE_PERMISSIONS 0660
@@ -30,6 +36,12 @@
 
 #define UI_URI "http://helander.network/plugins/uibridge"
 
+#define UI_MEDIATOR_QUEUE "/ui-mediator"
+#define UI_BRIDGE_QUEUE_PREFIX "/ui-bridge-"
+
+#define STATE_RESET 0
+#define STATE_OPERATIONAL 1
+
 typedef struct
 {
     LV2_Atom_Forge forge;
@@ -37,11 +49,16 @@ typedef struct
     LV2_URID_Unmap* unmap;
     LV2UI_Request_Value* request_value;
     LV2_Log_Logger logger;
+    LV2_Options_Option* options;
 
     LV2UI_Write_Function write;
     LV2UI_Controller controller;
 
+    char uuid[UUID_STR_LEN];
+    char plugin_uri[100];
+    char input_queue[100];
     mqd_t mq_input;
+    int state;
 
     LV2_URID patch_Get;
     LV2_URID patch_Set;
@@ -79,16 +96,19 @@ static LV2UI_Handle instantiate(const LV2UI_Descriptor* descriptor, const char* 
     LV2UI_Write_Function write_function, LV2UI_Controller controller, LV2UI_Widget* widget,
     const LV2_Feature* const* features)
 {
-    const char* mqName = getenv("LV2GENUI_MQ");
-    printf("\n  instantiat MQ %s plugin uri %s   bundle path %s\n", mqName, plugin_uri, bundle_path);
-    fflush(stdout);
     ThisUI* ui = (ThisUI*)calloc(1, sizeof(ThisUI));
     if (!ui) {
         return NULL;
     }
-
+    ui->state = STATE_RESET;
     ui->write = write_function;
     ui->controller = controller;
+    sprintf(ui->plugin_uri,"%s",plugin_uri);
+
+  uuid_t b;
+  uuid_generate(b);
+  uuid_unparse_lower(b, ui->uuid);
+
 
     struct mq_attr attr;
 
@@ -96,10 +116,11 @@ static LV2UI_Handle instantiate(const LV2UI_Descriptor* descriptor, const char* 
     attr.mq_maxmsg = MAX_MESSAGES;
     attr.mq_msgsize = MAX_MSG_SIZE;
     attr.mq_curmsgs = 0;
-    char* inputQueue = "/uibridgeinput";
+    sprintf(ui->input_queue,"%s%s", UI_BRIDGE_QUEUE_PREFIX, ui->uuid);
 
-    if ((ui->mq_input = mq_open(inputQueue, O_RDONLY | O_CREAT | O_NONBLOCK, QUEUE_PERMISSIONS, &attr)) == -1) {
-        printf("\nFailed to open input queue <%s>\n", inputQueue);
+    printf("\n  instantiat MQ %s plugin uri %s   bundle path %s\n", ui->input_queue, ui->plugin_uri, bundle_path);fflush(stdout);
+    if ((ui->mq_input = mq_open(ui->input_queue, O_RDONLY | O_CREAT | O_NONBLOCK, QUEUE_PERMISSIONS, &attr)) == -1) {
+        printf("\nFailed to open input queue <%s>\n", ui->input_queue);
         fflush(stdout);
     }
 
@@ -113,8 +134,10 @@ static LV2UI_Handle instantiate(const LV2UI_Descriptor* descriptor, const char* 
     LV2_URID__map,        &ui->map,           true,
     LV2_URID__unmap,      &ui->unmap,           true,
     LV2_UI__requestValue, &ui->request_value, false,
+    LV2_OPTIONS__options, &ui->options, false,
     NULL);
     // clang-format on
+
 
     lv2_log_logger_set_map(&ui->logger, ui->map);
     if (missing) {
@@ -136,6 +159,20 @@ static LV2UI_Handle instantiate(const LV2UI_Descriptor* descriptor, const char* 
     ui->atom_Path = ui->map->map(ui->map->handle, LV2_ATOM__Path);
     ui->midi_MidiEvent = ui->map->map(ui->map->handle, LV2_MIDI__MidiEvent);
 
+/*
+        if (ui->options) {
+                LV2_URID ui_scale   = ui->map->map (ui->map->handle, "http://lv2plug.in/ns/extensions/ui#scaleFactor");
+                                printf("\nui-scale urid %d",ui_scale);fflush(stdout);
+                for (const LV2_Options_Option* o = ui->options; o->key; ++o) {
+                                printf("\noption %d %s",o->key,ui->unmap->unmap(ui->unmap->handle, o->key));fflush(stdout);
+                        if (o->context == LV2_OPTIONS_INSTANCE && o->key == ui_scale && o->type == ui->atom_Float) {
+                                float ui_scale_value = *(const float*)o->value;
+                                printf("\nui-scale option %f",ui_scale_value);fflush(stdout);
+                        }
+                }
+        }
+*/
+
     lv2_atom_forge_init(&ui->forge, ui->map);
 
     return ui;
@@ -145,14 +182,16 @@ static void cleanup(LV2UI_Handle handle)
 {
     ThisUI* ui = (ThisUI*)handle;
 
+    mq_close(ui->mq_input);
+    mq_unlink(ui->input_queue);
     free(ui);
 }
 
 static void
-an_object(ThisUI* ui, char* source, LV2_Atom_Object* obj)
+an_object(ThisUI* ui, LV2_Atom_Object* obj)
 {
     char message[1000];
-    sprintf(message, "|source|%s|object|%s|", source, ui->unmap->unmap(ui->unmap->handle, obj->body.otype));
+    sprintf(message, "|source|%s|object|%s|", ui->uuid, ui->unmap->unmap(ui->unmap->handle, obj->body.otype));
     LV2_ATOM_OBJECT_FOREACH(obj, p)
     {
         if (p->value.type == ui->atom_Int) {
@@ -171,13 +210,21 @@ an_object(ThisUI* ui, char* source, LV2_Atom_Object* obj)
             LV2_Atom_URID* uridAtom = (LV2_Atom_URID*)&p->value;
             sprintf(message + strlen(message), "key|%s|type|uri|value|%s|", ui->unmap->unmap(ui->unmap->handle, p->key), ui->unmap->unmap(ui->unmap->handle,uridAtom->body));
         } else if (p->value.type == ui->atom_Object) {
-            an_object(ui, source, (LV2_Atom_Object*)p);
+            an_object(ui, (LV2_Atom_Object*)p);
         } else {
             printf("\n Unsupported atom type %s  size %d ", ui->unmap->unmap(ui->unmap->handle, p->value.type),p->value.size);
             fflush(stdout);
+            return;
         }
     }
-    printf("\nMESSAGE %s", message);fflush(stdout); //replace with mq_send
+    printf("\nMESSAGE %s", message);fflush(stdout); 
+      mqd_t mediator_queue = mq_open(UI_MEDIATOR_QUEUE, O_WRONLY | O_NONBLOCK, QUEUE_PERMISSIONS, NULL);
+      if (mediator_queue != -1) {
+         int status = mq_send(mediator_queue,message,strlen(message),0);
+         if (!status) ui->state = STATE_OPERATIONAL;
+      }
+
+
 }
 
 static void port_event(LV2UI_Handle handle, uint32_t port_index, uint32_t buffer_size, uint32_t format,
@@ -206,7 +253,7 @@ static void port_event(LV2UI_Handle handle, uint32_t port_index, uint32_t buffer
 
     LV2_Atom_Object* obj = (LV2_Atom_Object*)atom;
 
-    an_object(ui, "/setbfreeuiinput", obj);
+    an_object(ui, obj);
 }
 
 /* Idle interface for UI. */
@@ -215,6 +262,16 @@ static int ui_idle(LV2UI_Handle handle)
     ThisUI* ui = (ThisUI*)handle;
     if (ui->mq_input == -1)
         return 0;
+    if (ui->state == STATE_RESET) {
+      mqd_t mediator_queue = mq_open(UI_MEDIATOR_QUEUE, O_WRONLY | O_NONBLOCK, QUEUE_PERMISSIONS, NULL);
+      if (mediator_queue != -1) {
+         char message[200];
+         sprintf(message,"|source|%s|plugin|%s|",ui->uuid,ui->plugin_uri);
+         printf("\nMESSAGE %s", message);fflush(stdout); 
+         int status = mq_send(mediator_queue,message,strlen(message),0);
+         if (!status) ui->state = STATE_OPERATIONAL;
+      }
+    }
     char message[MSG_BUFFER_SIZE];
     int bytes = 0;
     bytes = mq_receive(ui->mq_input, message, MSG_BUFFER_SIZE, NULL);
